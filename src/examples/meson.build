@@ -24,10 +24,10 @@ executable('export-spa',
   dependencies : [pipewire_dep, mathlib],
 )
 
-executable('media-session',
+executable('pipewire-media-session',
   'media-session.c',
   c_args : [ '-D_GNU_SOURCE' ],
-  install: false,
+  install: true,
   dependencies : [pipewire_dep, mathlib],
 )
 
