@@ -69,6 +69,9 @@ struct impl {
 	struct spa_list node_list;
 	struct spa_list session_list;
 	int seq;
+
+	const char *preferred_audio_sink;
+	const char *preferred_audio_src;
 };
 
 struct object {
@@ -839,6 +842,7 @@ struct find_data {
 	struct impl *impl;
 	uint32_t path_id;
 	const char *media_class;
+	const char *device;
 	struct session *sess;
 	bool exclusive;
 	uint64_t plugged;
@@ -870,6 +874,14 @@ static int find_session(void *data, struct session *sess)
 
 		if (strcmp(str, find->media_class) != 0)
 			return 0;
+
+		if (find->device) {
+			if ((str = spa_dict_lookup(props, "alsa.device")) == NULL)
+				return 0;
+
+			if (strcmp(str, find->device) != 0)
+				return 0;
+		}
 
 		plugged = sess->plugged;
 	}
@@ -972,6 +984,8 @@ static int rescan_node(struct impl *impl, struct node *node)
 	char buf[1024];
 	int n_links = 0;
 
+	find.device = NULL;
+
 	if (node->type == NODE_TYPE_DSP || node->type == NODE_TYPE_DEVICE)
 		return 0;
 
@@ -1042,11 +1056,13 @@ static int rescan_node(struct impl *impl, struct node *node)
 		exclusive = false;
 
 	if (strcmp(media, "Audio") == 0) {
-		if (strcmp(category, "Playback") == 0)
+		if (strcmp(category, "Playback") == 0) {
 			find.media_class = "Audio/Sink";
-		else if (strcmp(category, "Capture") == 0)
+			find.device = impl->preferred_audio_sink;
+		} else if (strcmp(category, "Capture") == 0) {
 			find.media_class = "Audio/Source";
-		else {
+			find.device = impl->preferred_audio_src;
+		} else {
 			pw_log_debug(NAME" %p: node %d unhandled category %s",
 					impl, node->obj.id, category);
 			return -EINVAL;
@@ -1357,6 +1373,9 @@ int main(int argc, char *argv[])
 	struct impl impl = { 0, };
 
 	pw_init(&argc, &argv);
+
+	impl.preferred_audio_sink = getenv ("AUDIO_SINK");
+	impl.preferred_audio_src = getenv ("AUDIO_SRC");
 
 	impl.loop = pw_main_loop_new(NULL);
 	impl.core = pw_core_new(pw_main_loop_get_loop(impl.loop), NULL, 0);
