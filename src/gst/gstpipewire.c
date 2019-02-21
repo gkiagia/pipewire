@@ -61,7 +61,7 @@ plugin_init (GstPlugin *plugin)
       GST_TYPE_PIPEWIRE_SINK);
   gst_element_register (plugin, "pwaudiosrc", GST_RANK_NONE,
       GST_TYPE_PW_AUDIO_SRC);
-  gst_element_register (plugin, "pwaudiosink", GST_RANK_NONE,
+  gst_element_register (plugin, "pwaudiosink", GST_RANK_PRIMARY + 2,
       GST_TYPE_PW_AUDIO_SINK);
 
   if (!gst_device_provider_register (plugin, "pipewiredeviceprovider",
