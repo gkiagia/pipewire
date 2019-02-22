@@ -204,6 +204,7 @@ static bool do_export_node(struct data *data, const char *cmd, char *args, char 
 static bool do_enum_params(struct data *data, const char *cmd, char *args, char **error);
 static bool do_permissions(struct data *data, const char *cmd, char *args, char **error);
 static bool do_get_permissions(struct data *data, const char *cmd, char *args, char **error);
+static bool do_set_volume(struct data *data, const char *cmd, char *args, char **error);
 
 static struct command command_list[] = {
 	{ "help", "Show this help", do_help },
@@ -222,6 +223,7 @@ static struct command command_list[] = {
 	{ "enum-params", "Enumerate params of an object <object-id> [<param-id-name>]", do_enum_params },
 	{ "permissions", "Set permissions for a client <client-id> <permissions>", do_permissions },
 	{ "get-permissions", "Get permissions of a client <client-id>", do_get_permissions },
+	{ "set-volume", "Set volume of an audio stream node <node-id> <0-100>", do_set_volume },
 };
 
 static bool do_help(struct data *data, const char *cmd, char *args, char **error)
@@ -1278,6 +1280,58 @@ static bool do_get_permissions(struct data *data, const char *cmd, char *args, c
 	pw_client_proxy_get_permissions((struct pw_client_proxy*)global->proxy,
 			0, UINT32_MAX);
 
+	return true;
+}
+
+static bool do_set_volume(struct data *data, const char *cmd, char *args, char **error)
+{
+	struct remote_data *rd = data->current;
+	char *a[3];
+        int n;
+	uint32_t id;
+	struct global *global;
+	char buf[1024];
+	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
+	float v;
+
+	n = pw_split_ip(args, WHITESPACE, 2, a);
+	if (n < 2) {
+		asprintf(error, "%s <node-id> <volume>", cmd);
+		return false;
+	}
+
+	id = atoi(a[0]);
+	global = pw_map_lookup(&rd->globals, id);
+	if (global == NULL) {
+		asprintf(error, "%s: unknown global %d", cmd, id);
+		return false;
+	}
+	if (global->type != PW_TYPE_INTERFACE_Node) {
+		asprintf(error, "object %d is not a node", atoi(a[0]));
+		return false;
+	}
+	if (global->proxy == NULL) {
+		if (!bind_global(rd, global, error))
+			return false;
+	}
+
+	n = atoi(a[1]);
+	if (n < 0 || n > 100) {
+		asprintf(error, "volume must be between 0 and 100");
+		return false;
+	}
+	v = ((float)n) / 100.0f;
+
+	n = pw_node_proxy_set_param((struct pw_node_proxy*)global->proxy,
+		SPA_PARAM_Props, 0,
+		spa_pod_builder_add_object(&b,
+			SPA_TYPE_OBJECT_Props, SPA_PARAM_Props,
+			SPA_PROP_volume, SPA_POD_Float(v)));
+	if (n < 0) {
+		asprintf(error, "node did not accept setting the volume: %s",
+			strerror(-n));
+		return false;
+	}
 	return true;
 }
 
