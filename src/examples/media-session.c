@@ -44,7 +44,7 @@
 #include "pipewire/pipewire.h"
 #include "pipewire/private.h"
 
-#define NAME "media-session"
+#define NAME "pipewire-media-session"
 
 #define DEFAULT_CHANNELS	2
 #define DEFAULT_SAMPLERATE	48000
