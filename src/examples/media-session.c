@@ -28,6 +28,11 @@
 #include <math.h>
 #include <time.h>
 
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <signal.h>
+
 #include "config.h"
 
 #include <spa/node/node.h>
@@ -48,6 +53,15 @@
 
 #define MIN_QUANTUM_SIZE	64
 #define MAX_QUANTUM_SIZE	1024
+
+
+#define N_AUDIO_ROLES 6
+
+static const char *audio_roles[] = {
+	"Multimedia", "Radio", "Communication",
+	"Navigation", "Emergency", "Capture",
+	NULL
+};
 
 struct impl {
 	struct timespec now;
@@ -72,6 +86,9 @@ struct impl {
 
 	const char *preferred_audio_sink;
 	const char *preferred_audio_src;
+
+	float volumes[6];
+	bool mute[6];
 };
 
 struct object {
@@ -119,6 +136,8 @@ struct node {
 	struct spa_audio_info_raw format;
 
 	struct spa_audio_info_raw profile_format;
+
+	char *role;
 };
 
 struct port {
@@ -169,6 +188,87 @@ struct session {
 	bool exclusive;
 	bool need_dsp;
 };
+
+static int role_idx(const char *role)
+{
+	int i;
+	if (!role)
+		return -1;
+	for (i = 0; audio_roles[i]; i++) {
+		if (!strcmp(role, audio_roles[i])) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static void stream_set_volume(struct impl *impl, struct node *node, float volume, bool mute)
+{
+	char buf[1024];
+	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
+
+	pw_log_debug(NAME " %p: node %d set volume:%f mute:%d", impl, node->obj.id, volume, mute);
+
+	pw_node_proxy_set_param((struct pw_node_proxy*)node->obj.proxy,
+			SPA_PARAM_Props, 0,
+			spa_pod_builder_add_object(&b,
+				SPA_TYPE_OBJECT_Props, SPA_PARAM_Props,
+				SPA_PROP_volume,	SPA_POD_Float(volume),
+				SPA_PROP_mute,		SPA_POD_Bool(mute)));
+}
+
+static int role_set_volume(struct impl *impl, const char *role, bool other_roles,
+	float *volume, bool *mute)
+{
+	struct session *session;
+	struct node *node;
+	int roleidx = role_idx(role);
+	int node_roleidx;
+	float v;
+	bool m;
+
+	if (roleidx < 0)
+		return -1;
+
+	/* modify if specified, otherwise stick to the old value */
+	v = volume ? *volume : impl->volumes[roleidx];
+	m = mute ? *mute : impl->mute[roleidx];
+
+	spa_list_for_each(session, &impl->session_list, l) {
+		if (!session->dsp) /* HACK, meaning, if it's an audio session */
+			continue;
+
+		spa_list_for_each(node, &session->node_list, session_link) {
+			node_roleidx = role_idx(node->role);
+			if (node_roleidx < 0)
+				continue;
+
+			if (roleidx == node_roleidx && !other_roles)
+				stream_set_volume(impl, node, v, m);
+			else if (roleidx != node_roleidx && other_roles)
+				stream_set_volume(impl, node, v, m);
+		}
+	}
+
+	/* store */
+	if (!other_roles) {
+		impl->volumes[roleidx] = v;
+		impl->mute[roleidx] = m;
+	}
+	return 0;
+}
+
+static int role_get_volume(struct impl *impl, const char *role, float *volume, bool *mute)
+{
+	int roleidx = role_idx(role);
+	if ((!volume && !mute) || roleidx < 0)
+		return -1;
+	if (volume)
+		*volume = impl->volumes[roleidx];
+	if (mute)
+		*mute = impl->mute[roleidx];
+	return 0;
+}
 
 static void add_object(struct impl *impl, struct object *obj)
 {
@@ -449,6 +549,7 @@ static void node_proxy_destroy(void *data)
 	if (n->info)
 		pw_node_info_free(n->info);
 	free(n->media);
+	free(n->role);
 	if (n->session) {
 		spa_list_remove(&n->session_link);
 		n->session = NULL;
@@ -953,21 +1054,6 @@ static int link_nodes(struct node *peer, enum pw_direction direction, struct nod
 	return 0;
 }
 
-static void stream_set_volume(struct impl *impl, struct node *node, float volume, bool mute)
-{
-	char buf[1024];
-	struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
-
-	pw_log_debug(NAME " %p: node %d set volume:%f mute:%d", impl, node->obj.id, volume, mute);
-
-	pw_node_proxy_set_param((struct pw_node_proxy*)node->obj.proxy,
-			SPA_PARAM_Props, 0,
-			spa_pod_builder_add_object(&b,
-				SPA_TYPE_OBJECT_Props, SPA_PARAM_Props,
-				SPA_PROP_volume,	SPA_POD_Float(volume),
-				SPA_PROP_mute,		SPA_POD_Bool(mute)));
-}
-
 static int rescan_node(struct impl *impl, struct node *node)
 {
 	struct spa_dict *props;
@@ -983,6 +1069,7 @@ static int rescan_node(struct impl *impl, struct node *node)
 	struct spa_pod *param;
 	char buf[1024];
 	int n_links = 0;
+	int roleidx;
 
 	find.device = NULL;
 
@@ -1036,9 +1123,9 @@ static int rescan_node(struct impl *impl, struct node *node)
 			if (strcmp(category, "Duplex") == 0)
 				role = "Communication";
 			else if (strcmp(category, "Capture") == 0)
-				role = "Production";
+				role = "Capture";
 			else
-				role = "Music";
+				role = "Multimedia";
 		}
 		else if (strcmp(media, "Video") == 0) {
 			if (strcmp(category, "Duplex") == 0)
@@ -1049,6 +1136,7 @@ static int rescan_node(struct impl *impl, struct node *node)
 				role = "Video";
 		}
 	}
+	node->role = strdup(role);
 
 	if ((str = spa_dict_lookup(props, PW_NODE_PROP_EXCLUSIVE)) != NULL)
 		exclusive = pw_properties_parse_bool(str);
@@ -1200,7 +1288,13 @@ do_link_profile:
 		pw_node_proxy_set_param((struct pw_node_proxy*)node->obj.proxy,
 				SPA_PARAM_Profile, 0, param);
 
-		stream_set_volume(impl, node, 1.0, false);
+		roleidx = role_idx(role);
+		if (roleidx >= 0)
+			stream_set_volume(impl, node, impl->volumes[roleidx], impl->mute[roleidx]);
+		else
+			/* mute unknown roles */
+			stream_set_volume(impl, node, 1.0, true);
+
 		n_links = audio_info.channels;
 	} else {
 		n_links = audio_info.channels = 1;
@@ -1368,17 +1462,232 @@ static const struct pw_remote_events remote_events = {
 	.state_changed = on_state_changed,
 };
 
+static const char WHITESPACE[] = " \t";
+
+static int pw_split_ip(char *str, const char *delimiter, int max_tokens, char *tokens[])
+{
+	const char *state = NULL;
+	char *s;
+	size_t len;
+	int n = 0;
+
+        s = (char *)pw_split_walk(str, delimiter, &len, &state);
+        while (s && n + 1 < max_tokens) {
+		s[len] = '\0';
+		tokens[n++] = s;
+                s = (char*)pw_split_walk(str, delimiter, &len, &state);
+        }
+        if (s) {
+		tokens[n++] = s;
+        }
+        return n;
+}
+
+static bool parse(struct impl *impl, char *buf, char **result)
+{
+	char *a[3];
+	int n, value;
+	char *p, *cmd, *role;
+
+	p = pw_strip(buf, "\n\r \t");
+
+	if (*p == '\0')
+		return false;
+
+	n = pw_split_ip(p, WHITESPACE, 3, a);
+	if (n < 3)
+		return false;
+
+	cmd = a[0];
+	role = a[1];
+	value = atoi(a[2]);
+
+	if (!strcmp(cmd, "volume")) {
+		float volume;
+		if (value >= 0 && value <= 100) {
+			volume = ((float)value) / 100.0f;
+			if (role_set_volume(impl, role, false, &volume, NULL) < 0)
+				return false;
+		} else if (value != -1) {
+			return false;
+		}
+
+		if (role_get_volume(impl, role, &volume, NULL) < 0)
+			return false;
+
+		value = volume * 100;
+		asprintf(result, "%d", value);
+		return true;
+	} else if (!strcmp(cmd, "mute")) {
+		bool mute;
+		if (value >= 0 && value <= 1) {
+			mute = (value == 0) ? false : true;
+			if (role_set_volume(impl, role, false, NULL, &mute) < 0)
+				return false;
+		} else if (value != -1) {
+			return false;
+		}
+
+		if (role_get_volume(impl, role, NULL, &mute) < 0)
+			return false;
+
+		value = (mute == false) ? 0 : 1;
+		asprintf(result, "%d", value);
+		return true;
+	}
+
+	return false;
+}
+
+static void comm_client_input(void *data, int fd, enum spa_io mask)
+{
+	struct impl *impl = data;
+	char buf[4096], *result = NULL;
+	ssize_t r;
+	bool free_result = true;
+
+	if (mask & SPA_IO_IN) {
+		while (true) {
+			r = read(fd, buf, sizeof(buf));
+			if (r < 0) {
+				if (errno == EAGAIN || errno == EINTR)
+					continue;
+				perror("read");
+				r = 0;
+				break;
+			}
+			break;
+		}
+		if (r == 0)
+			return;
+
+		buf[r] = '\0';
+
+		if (!parse(impl, buf, &result) || result == NULL) {
+			result = "-1";
+			free_result = false;
+		}
+
+		while (true) {
+			r = write(fd, result, strlen(result));
+			if (r < 0) {
+				if (errno == EAGAIN || errno == EINTR)
+					continue;
+				perror("write");
+				r = 0;
+				break;
+			}
+			break;
+		}
+
+		if (free_result)
+			free(result);
+	}
+}
+
+static void comm_input(void *data, int fd, enum spa_io mask)
+{
+	struct impl *impl = data;
+	int client_fd;
+	struct pw_loop *l;
+
+	client_fd = accept(fd, NULL, NULL);
+	if (client_fd < 0) {
+		perror("accept");
+		return;
+	}
+
+	l = pw_main_loop_get_loop(impl->loop);
+	pw_loop_add_io(l, client_fd, SPA_IO_IN, true, comm_client_input, impl);
+}
+
+static int open_comm(struct impl *impl)
+{
+	int fd;
+	struct sockaddr_un addr;
+	struct pw_loop *l;
+	int name_size;
+	const char *runtime_dir = NULL;
+
+	if ((runtime_dir = getenv("XDG_RUNTIME_DIR")) == NULL) {
+		pw_log_error("connect failed: XDG_RUNTIME_DIR not set in the environment");
+		return -1;
+	}
+
+	fd = socket(PF_LOCAL, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+	if (fd < 0) {
+		perror("socket");
+		return -1;
+	}
+
+	memset(&addr, 0, sizeof(addr));
+	addr.sun_family = AF_LOCAL;
+	name_size = snprintf(addr.sun_path, sizeof(addr.sun_path), "%s/"NAME, runtime_dir) + 1;
+
+	if (name_size > (int) sizeof(addr.sun_path)) {
+		pw_log_error("socket path \"%s/"NAME"\" plus null terminator exceeds 108 bytes",
+			runtime_dir);
+		close(fd);
+		return -1;
+	}
+
+	if (bind(fd,(const struct sockaddr *) &addr, sizeof(addr)) < 0) {
+		perror("bind");
+		close(fd);
+		return -1;
+	}
+
+	if (listen(fd, 10) < 0) {
+		perror("listen");
+		close(fd);
+		return -1;
+	}
+
+	l = pw_main_loop_get_loop(impl->loop);
+	pw_loop_add_io(l, fd, SPA_IO_IN, true, comm_input, impl);
+
+	return 0;
+}
+
+static void remove_comm_socket(void)
+{
+	const char *runtime_dir = NULL;
+	char buf[108];
+
+	if ((runtime_dir = getenv("XDG_RUNTIME_DIR")) == NULL)
+		return;
+	snprintf(buf, sizeof(buf), "%s/"NAME, runtime_dir);
+	unlink(buf);
+}
+
+static void do_quit(void *data, int signal_number)
+{
+	struct impl *impl = data;
+	pw_main_loop_quit(impl->loop);
+}
+
 int main(int argc, char *argv[])
 {
 	struct impl impl = { 0, };
+	struct pw_loop *l;
+	int i;
 
 	pw_init(&argc, &argv);
 
 	impl.preferred_audio_sink = getenv ("AUDIO_SINK");
 	impl.preferred_audio_src = getenv ("AUDIO_SRC");
+	for (i = 0; i < N_AUDIO_ROLES; i++) {
+		impl.volumes[i] = 1.0;
+		impl.mute[i] = false;
+	}
 
 	impl.loop = pw_main_loop_new(NULL);
-	impl.core = pw_core_new(pw_main_loop_get_loop(impl.loop), NULL, 0);
+	l = pw_main_loop_get_loop(impl.loop);
+
+	pw_loop_add_signal(l, SIGINT, do_quit, &impl);
+	pw_loop_add_signal(l, SIGTERM, do_quit, &impl);
+
+	impl.core = pw_core_new(l, NULL, 0);
         impl.remote = pw_remote_new(impl.core, NULL, 0);
 
 	pw_map_init(&impl.globals, 64, 64);
@@ -1391,13 +1700,21 @@ int main(int argc, char *argv[])
 
 	pw_remote_add_listener(impl.remote, &impl.remote_listener, &remote_events, &impl);
 
+	if (open_comm(&impl) < 0) {
+		fprintf(stderr, "Failed to open comm\n");
+		return -2;
+	}
+
 	if (pw_remote_connect(impl.remote) < 0)
 		return -1;
 
 	pw_main_loop_run(impl.loop);
 
+	pw_remote_destroy(impl.remote);
 	pw_core_destroy(impl.core);
 	pw_main_loop_destroy(impl.loop);
+
+	remove_comm_socket();
 
 	return 0;
 }
