@@ -28,7 +28,7 @@ pipewire_bindir = join_paths(prefix, get_option('bindir'))
 pipewire_datadir = join_paths(prefix, get_option('datadir'))
 pipewire_libdir = join_paths(prefix, get_option('libdir'))
 pipewire_localedir = join_paths(prefix, get_option('localedir'))
-pipewire_sysconfdir = join_paths(prefix, get_option('sysconfdir'))
+pipewire_sysconfdir = get_option('sysconfdir')
 
 pipewire_configdir = join_paths(pipewire_sysconfdir, 'pipewire')
 modules_install_dir = join_paths(pipewire_libdir, 'pipewire-@0@'.format(apiversion))
