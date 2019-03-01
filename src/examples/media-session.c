@@ -89,6 +89,7 @@ struct impl {
 
 	float volumes[6];
 	bool mute[6];
+	int zones[6];
 };
 
 struct object {
@@ -138,6 +139,7 @@ struct node {
 	struct spa_audio_info_raw profile_format;
 
 	char *role;
+	struct pw_proxy *link_proxy[16];
 };
 
 struct port {
@@ -258,15 +260,18 @@ static int role_set_volume(struct impl *impl, const char *role, bool other_roles
 	return 0;
 }
 
-static int role_get_volume(struct impl *impl, const char *role, float *volume, bool *mute)
+static int role_get_props(struct impl *impl, const char *role, float *volume,
+			  bool *mute, int *zone)
 {
 	int roleidx = role_idx(role);
-	if ((!volume && !mute) || roleidx < 0)
+	if ((!volume && !mute && !zone) || roleidx < 0)
 		return -1;
 	if (volume)
 		*volume = impl->volumes[roleidx];
 	if (mute)
 		*mute = impl->mute[roleidx];
+	if (zone)
+		*zone = impl->zones[roleidx];
 	return 0;
 }
 
@@ -1007,8 +1012,17 @@ static int link_nodes(struct node *peer, enum pw_direction direction, struct nod
 {
 	struct impl *impl = peer->obj.impl;
 	struct port *p;
+	int zone_skip = 0, roleidx;
+	int i = 0;
 
 	pw_log_debug(NAME " %p: link nodes %d %d %d", impl, max, node->obj.id, peer->obj.id);
+
+	/* zone0 -> playback_0, playback_1;
+	 * zone1 -> playback_1, playback_2;
+	 * etc... */
+	roleidx = role_idx(node->role);
+	if (roleidx >= 0)
+		zone_skip = impl->zones[roleidx];
 
 	spa_list_for_each(p, &peer->port_list, l) {
 		struct pw_properties *props;
@@ -1018,6 +1032,8 @@ static int link_nodes(struct node *peer, enum pw_direction direction, struct nod
 		if (p->direction == direction)
 			continue;
 		if (p->flags & PORT_FLAG_SKIP)
+			continue;
+		if (zone_skip-- > 0)
 			continue;
 
 		if (max-- == 0)
@@ -1042,7 +1058,7 @@ static int link_nodes(struct node *peer, enum pw_direction direction, struct nod
 					peer->obj.id, p->obj.id, node->obj.id);
 		}
 
-		pw_core_proxy_create_object(impl->core_proxy,
+		node->link_proxy[i++] = pw_core_proxy_create_object(impl->core_proxy,
                                           "link-factory",
                                           PW_TYPE_INTERFACE_Link,
                                           PW_VERSION_LINK,
@@ -1051,6 +1067,59 @@ static int link_nodes(struct node *peer, enum pw_direction direction, struct nod
 
 		pw_properties_free(props);
 	}
+	return 0;
+}
+
+static int unlink_node_from_dsp(struct impl *impl, struct node *node)
+{
+	int i;
+	if (!impl->core_proxy)
+		return -1;
+
+	for (i = 0; i < SPA_N_ELEMENTS(node->link_proxy); i++) {
+		if (node->link_proxy[i] == NULL)
+			return 0;
+		pw_core_proxy_destroy(impl->core_proxy, node->link_proxy[i]);
+		node->link_proxy[i] = NULL;
+	}
+	return 0;
+}
+
+static int role_set_zone(struct impl *impl, const char *role, int zone)
+{
+	struct session *session;
+	struct node *node, *tmp;
+	int roleidx;
+	int node_roleidx;
+
+	roleidx = role_idx(role);
+	if (roleidx < 0)
+		return -1;
+
+	impl->zones[roleidx] = zone;
+
+	spa_list_for_each(session, &impl->session_list, l) {
+		if (!session->dsp) /* HACK, meaning, if it's an audio session */
+			continue;
+
+		spa_list_for_each_safe(node, tmp, &session->node_list, session_link) {
+			node_roleidx = role_idx(node->role);
+			if (node_roleidx < 0)
+				continue;
+
+			if (roleidx == node_roleidx) {
+				/* unlink, remove from the session */
+				unlink_node_from_dsp(impl, node);
+				free(node->role);
+				spa_list_remove(&node->session_link);
+				node->session = NULL;
+			}
+		}
+	}
+
+	/* rescan will re-add the nodes in their sessions, using the correct zone */
+	schedule_rescan(impl);
+
 	return 0;
 }
 
@@ -1512,7 +1581,7 @@ static bool parse(struct impl *impl, char *buf, char **result)
 			return false;
 		}
 
-		if (role_get_volume(impl, role, &volume, NULL) < 0)
+		if (role_get_props(impl, role, &volume, NULL, NULL) < 0)
 			return false;
 
 		value = volume * 100;
@@ -1528,10 +1597,23 @@ static bool parse(struct impl *impl, char *buf, char **result)
 			return false;
 		}
 
-		if (role_get_volume(impl, role, NULL, &mute) < 0)
+		if (role_get_props(impl, role, NULL, &mute, NULL) < 0)
 			return false;
 
 		value = (mute == false) ? 0 : 1;
+		asprintf(result, "%d", value);
+		return true;
+	} else if (!strcmp(cmd, "zone")) {
+		if (value >= 0) {
+			if (role_set_zone(impl, role, value) < 0)
+				return false;
+		} else if (value != -1) {
+			return false;
+		}
+
+		if (role_get_props(impl, role, NULL, NULL, &value) < 0)
+			return false;
+
 		asprintf(result, "%d", value);
 		return true;
 	}
