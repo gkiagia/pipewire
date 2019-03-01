@@ -1621,9 +1621,15 @@ static bool parse(struct impl *impl, char *buf, char **result)
 	return false;
 }
 
+struct source_data {
+	struct impl *impl;
+	struct spa_source *source;
+};
+
 static void comm_client_input(void *data, int fd, enum spa_io mask)
 {
-	struct impl *impl = data;
+	struct source_data *sd = data;
+	struct impl *impl = sd->impl;
 	char buf[4096], *result = NULL;
 	ssize_t r;
 	bool free_result = true;
@@ -1642,30 +1648,36 @@ static void comm_client_input(void *data, int fd, enum spa_io mask)
 			}
 			break;
 		}
-		if (r == 0)
-			return;
+		if (r > 0) {
+			buf[r] = '\0';
 
-		buf[r] = '\0';
+			if (!parse(impl, buf, &result) || result == NULL) {
+				result = "-1";
+				free_result = false;
+			}
 
-		if (!parse(impl, buf, &result) || result == NULL) {
-			result = "-1";
-			free_result = false;
-		}
-
-		while (true) {
-			r = write(fd, result, strlen(result));
-			if (r < 0) {
-				if (errno == EAGAIN || errno == EINTR)
-					continue;
-				perror("write");
-				r = 0;
+			while (true) {
+				r = write(fd, result, strlen(result));
+				if (r < 0) {
+					if (errno == EAGAIN || errno == EINTR)
+						continue;
+					perror("write");
+					r = 0;
+					break;
+				}
 				break;
 			}
-			break;
-		}
 
-		if (free_result)
-			free(result);
+			if (free_result)
+				free(result);
+		}
+	}
+
+	if (mask & SPA_IO_HUP) {
+		struct pw_loop *l;
+		l = pw_main_loop_get_loop(impl->loop);
+		pw_loop_destroy_source(l, sd->source);
+		free(sd);
 	}
 }
 
@@ -1674,6 +1686,7 @@ static void comm_input(void *data, int fd, enum spa_io mask)
 	struct impl *impl = data;
 	int client_fd;
 	struct pw_loop *l;
+	struct source_data *sd;
 
 	client_fd = accept(fd, NULL, NULL);
 	if (client_fd < 0) {
@@ -1681,8 +1694,11 @@ static void comm_input(void *data, int fd, enum spa_io mask)
 		return;
 	}
 
+	sd = calloc(1, sizeof(struct source_data));
+	sd->impl = impl;
+
 	l = pw_main_loop_get_loop(impl->loop);
-	pw_loop_add_io(l, client_fd, SPA_IO_IN, true, comm_client_input, impl);
+	sd->source = pw_loop_add_io(l, client_fd, SPA_IO_IN | SPA_IO_HUP, true, comm_client_input, sd);
 }
 
 static int open_comm(struct impl *impl)
