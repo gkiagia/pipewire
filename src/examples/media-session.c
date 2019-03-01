@@ -1632,7 +1632,9 @@ static void comm_client_input(void *data, int fd, enum spa_io mask)
 		while (true) {
 			r = read(fd, buf, sizeof(buf));
 			if (r < 0) {
-				if (errno == EAGAIN || errno == EINTR)
+				if (errno == EAGAIN)
+					return;
+				if (errno == EINTR)
 					continue;
 				perror("read");
 				r = 0;
