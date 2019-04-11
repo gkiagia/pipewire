@@ -1227,6 +1227,18 @@ static int register_a2dp_endpoint(struct spa_bt_monitor *monitor,
 			return -ENOTSUP;
 		}
 		break;
+	case SPA_BT_PROFILE_A2DP_SINK:
+		switch (codec) {
+		case A2DP_CODEC_SBC:
+			profile_path = "/A2DP/SBC/Sink";
+			break;
+		case A2DP_CODEC_MPEG24:
+			profile_path = "/A2DP/MPEG24/Sink";
+			break;
+		default:
+			return -ENOTSUP;
+		}
+		break;
 	default:
 		return -ENOTSUP;
 	}
@@ -1297,10 +1309,20 @@ static int adapter_register_endpoints(struct spa_bt_adapter *a)
 			       SPA_BT_PROFILE_A2DP_SOURCE,
 			       A2DP_CODEC_MPEG24,
 			       &bluez_a2dp_aac, sizeof(bluez_a2dp_aac));
+	register_a2dp_endpoint(monitor, a->path,
+			       SPA_BT_UUID_A2DP_SINK,
+			       SPA_BT_PROFILE_A2DP_SINK,
+			       A2DP_CODEC_MPEG24,
+			       &bluez_a2dp_aac, sizeof(bluez_a2dp_aac));
 #endif
 	register_a2dp_endpoint(monitor, a->path,
 			       SPA_BT_UUID_A2DP_SOURCE,
 			       SPA_BT_PROFILE_A2DP_SOURCE,
+			       A2DP_CODEC_SBC,
+			       &bluez_a2dp_sbc, sizeof(bluez_a2dp_sbc));
+	register_a2dp_endpoint(monitor, a->path,
+			       SPA_BT_UUID_A2DP_SINK,
+			       SPA_BT_PROFILE_A2DP_SINK,
 			       A2DP_CODEC_SBC,
 			       &bluez_a2dp_sbc, sizeof(bluez_a2dp_sbc));
 	return 0;
