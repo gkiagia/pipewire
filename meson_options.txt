@@ -53,7 +53,7 @@ option('bluez5',
 option('audiotestsrc',
        description: 'Enable audiotestsrc spa plugin integration',
        type: 'boolean',
-       value: false)
+       value: true)
 option('ffmpeg',
        description: 'Enable ffmpeg spa plugin integration',
        type: 'boolean',
