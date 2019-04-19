@@ -554,11 +554,13 @@ impl_node_port_enum_params(struct spa_node *node, int seq,
 	result.id = id;
 	result.next = start;
       next:
+        result.index = result.next++;
+
 	spa_pod_builder_init(&b, buffer, sizeof(buffer));
 
 	switch (id) {
 	case SPA_PARAM_EnumFormat:
-		if (*index > 0)
+		if (result.index > 0)
 			return 0;
 
 		switch (this->transport->codec) {
@@ -588,6 +590,12 @@ impl_node_port_enum_params(struct spa_node *node, int seq,
 			param = spa_format_audio_raw_build(&b, id, &info);
 			break;
 		}
+		case A2DP_CODEC_MPEG24:
+		{
+			/* not implemented yet */
+			spa_log_error(this->log, "a2dp mpeg24 codec not implemented yet");
+			return -EIO;
+		}
 		default:
 			return -EIO;
 		}
@@ -596,7 +604,7 @@ impl_node_port_enum_params(struct spa_node *node, int seq,
 	case SPA_PARAM_Format:
 		if (!this->have_format)
 			return -EIO;
-		if (*index > 0)
+		if (result.index > 0)
 			return 0;
 
 		param = spa_format_audio_raw_build(&b, id, &this->current_format.info.raw);
@@ -605,7 +613,7 @@ impl_node_port_enum_params(struct spa_node *node, int seq,
 	case SPA_PARAM_Buffers:
 		if (!this->have_format)
 			return -EIO;
-		if (*index > 0)
+		if (result.index > 0)
 			return 0;
 
 		param = spa_pod_builder_add_object(&b,
@@ -621,9 +629,6 @@ impl_node_port_enum_params(struct spa_node *node, int seq,
 		break;
 
 	case SPA_PARAM_Meta:
-		if (!this->have_format)
-			return -EIO;
-
 		switch (result.index) {
 		case 0:
 			param = spa_pod_builder_add_object(&b,
@@ -636,24 +641,13 @@ impl_node_port_enum_params(struct spa_node *node, int seq,
 		}
 		break;
 
-	case SPA_PARAM_IO:
-		switch (result.index) {
-		case 0:
-			param = spa_pod_builder_add_object(&b,
-				SPA_TYPE_OBJECT_ParamIO, id,
-				SPA_PARAM_IO_id,   SPA_POD_Id(SPA_IO_Buffers),
-				SPA_PARAM_IO_size, SPA_POD_Int(sizeof(struct spa_io_buffers)));
-			break;
-		default:
-			return 0;
-		}
-		break;
-
 	default:
 		return -ENOENT;
 	}
 
-	if (spa_pod_filter(&b, &result.param, param, filter) < 0)
+	/* TODO: why filer is != NULL when linking it with a2dp-sink? */
+	/* if (spa_pod_filter(&b, &result.param, param, filter) < 0) */
+	if (spa_pod_filter(&b, &result.param, param, NULL) < 0)
 		goto next;
 
 	spa_node_emit_result(&this->hooks, seq, 0, &result);
@@ -704,14 +698,6 @@ static int port_set_format(struct spa_node *node,
 		this->current_format = info;
 		this->have_format = true;
 	}
-
-	/*
-	if (this->have_format) {
-		this->info.rate = this->current_format.info.raw.rate;
-		this->info.change_mask |= SPA_PORT_CHANGE_MASK_RATE;
-		emit_port_info(this);
-	}
-	*/
 
 	return 0;
 }
@@ -864,31 +850,35 @@ static int impl_node_process(struct spa_node *node)
 	struct spa_io_buffers *io;
 	struct buffer *b;
 
+	/* get IO */
 	spa_return_val_if_fail(node != NULL, -EINVAL);
-
 	this = SPA_CONTAINER_OF(node, struct impl, node);
 	io = this->io;
 	spa_return_val_if_fail(io != NULL, -EIO);
 
-	if (io->status == SPA_STATUS_HAVE_BUFFER)
-		return SPA_STATUS_HAVE_BUFFER;
+	/* don't do anything if IO does not need a buffer */
+	if (io->status != SPA_STATUS_NEED_BUFFER)
+		return io->status;
 
-	if (io->buffer_id < this->n_buffers) {
+	/* Recycle previously played buffer */
+	if (io->buffer_id != SPA_ID_INVALID &&
+	    io->buffer_id < this->n_buffers) {
+		spa_log_debug(this->log, "recycling buffer_id=%d", io->buffer_id);
 		recycle_buffer(this, io->buffer_id);
 		io->buffer_id = SPA_ID_INVALID;
 	}
 
+	/* Check if we have new buffers in the queue */
 	if (spa_list_is_empty(&this->ready))
 		return SPA_STATUS_OK;
 
+	/* Pop the new buffer from the queue */
 	b = spa_list_first(&this->ready, struct buffer, link);
 	spa_list_remove(&b->link);
 
-	spa_log_trace(this->log, NAME " %p: dequeue buffer %d", node, b->id);
-
+	/* Set the new buffer in IO to be played */
 	io->buffer_id = b->id;
 	io->status = SPA_STATUS_HAVE_BUFFER;
-
 	return SPA_STATUS_HAVE_BUFFER;
 }
 
