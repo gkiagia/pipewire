@@ -99,7 +99,7 @@ struct impl {
 	struct spa_source source;
 
 	sbc_t sbc;
-	uint8_t buffer[4096];
+	uint8_t buffer_read[4096];
 	struct timespec now;
 };
 
@@ -245,102 +245,124 @@ static void reset_buffers(struct impl *this)
 	}
 }
 
-static void decode_data(struct impl *this, uint8_t *src, size_t src_size)
+static void decode_sbc_data(struct impl *this, uint8_t *src, size_t src_size)
 {
 	const ssize_t header_size = sizeof(struct rtp_header) + sizeof(struct rtp_payload);
-	struct buffer *b;
-	struct spa_data *d;
+	struct buffer *buffer;
+	struct spa_data *data;
 	uint8_t *dest;
-	size_t decoded, avail, written;
-	struct spa_io_buffers *io;
+	size_t decoded, dest_size, written;
 
+	/* skip the header */
 	src += header_size;
 	src_size -= header_size;
-
-	while (src_size > 0) {
-		if (spa_list_is_empty(&this->free)) {
-			spa_log_warn(this->log, "no more buffers");
-			return;
-		}
-
-		b = spa_list_first(&this->free, struct buffer, link);
-
-		if (b->h) {
-			b->h->seq = this->sample_count;
-			b->h->pts = SPA_TIMESPEC_TO_NSEC(&this->now);
-			b->h->dts_offset = 0;
-		}
-
-		d = b->buf->datas;
-		dest = d[0].data;
-		avail = d[0].maxsize;
-
-		while (avail > 0 && src_size > 0) {
-			decoded = sbc_decode(&this->sbc,
-				src, src_size,
-				dest, avail, &written);
-			if (decoded <= 0) {
-				spa_log_error(this->log, "sbc decoder error");
-				return;
-			}
-
-			src_size -= decoded;
-			src += decoded;
-			avail -= written;
-			dest += written;
-		}
-
-		d[0].chunk->offset = 0;
-		d[0].chunk->size = d[0].maxsize - avail;
-		d[0].chunk->stride = this->frame_size;
-		this->sample_count += d[0].chunk->size / this->frame_size;
-
-		spa_list_remove(&b->link);
-		b->outstanding = false;
-
-		io = this->io;
-		if (io != NULL && io->status != SPA_STATUS_HAVE_BUFFER) {
-			io->buffer_id = b->id;
-			io->status = SPA_STATUS_HAVE_BUFFER;
-		}
-		else {
-			spa_list_append(&this->ready, &b->link);
-		}
-
-		this->callbacks->ready(this->callbacks_data, SPA_STATUS_HAVE_BUFFER);
+	if (src_size <= 0) {
+		spa_log_error(this->log, "not valid header found. dropping data...");
+		return;
 	}
+
+	/* check if we have a new buffer */
+	if (spa_list_is_empty(&this->free)) {
+		spa_log_warn(this->log, "no more buffers available, dropping data...");
+		return;
+	}
+
+	/* get the buffer */
+	buffer = spa_list_first(&this->free, struct buffer, link);
+
+	/* remove the the buffer from the list */
+        spa_list_remove(&buffer->link);
+
+        /* ppdate the outstanding flag */
+        buffer->outstanding = false;
+
+	/* set the header */
+	if (buffer->h) {
+		buffer->h->seq = this->sample_count;
+		buffer->h->pts = SPA_TIMESPEC_TO_NSEC(&this->now);
+		buffer->h->dts_offset = 0;
+	}
+
+	/* get the dest data values */
+	data = buffer->buf->datas;
+	dest = data[0].data;
+	dest_size = data[0].maxsize;
+
+	/* decode the source data */
+	spa_log_debug(this->log, "decoding data for buffer_id=%d", buffer->id);
+	while (src_size > 0 && dest_size > 0) {
+		decoded = sbc_decode(&this->sbc,
+			src, src_size,
+			dest, dest_size, &written);
+		if (decoded <= 0) {
+			printf ("Decoding error. Exiting...\n");
+			exit(-1);
+		}
+
+		/* update source and dest pointers */
+		src_size -= decoded;
+		src += decoded;
+		dest_size -= written;
+		dest += written;
+	}
+
+	/* make sure all data has been decoded */
+	spa_assert(src_size <= 0);
+
+	/* set the decoded data */
+	data[0].chunk->offset = 0;
+	data[0].chunk->size = data[0].maxsize - dest_size;
+	data[0].chunk->stride = this->frame_size;
+
+        /* update the sample count */
+        this->sample_count += data[0].chunk->size / this->frame_size;
+
+        /* add the buffer to the queue */
+        spa_log_debug(this->log, "data decoded successfully for buffer_id=%d", buffer->id);
+        spa_list_append(&this->ready, &buffer->link);
+        this->callbacks->ready(this->callbacks_data, SPA_STATUS_HAVE_BUFFER);
 }
 
 static void a2dp_on_ready_read(struct spa_source *source)
 {
 	struct impl *this = source->data;
-	ssize_t r;
+	const ssize_t buffer_size = sizeof(this->buffer_read);
+	ssize_t size_read;
 
-	spa_log_debug(this->log, "a2dp-source READ");
-
+	/* make sure the source is an input */
 	if ((source->rmask & SPA_IO_IN) == 0) {
-		spa_log_error(this->log, "source error, rmask=%d", source->rmask);
+		spa_log_error(this->log, "source is not an input, rmask=%d", source->rmask);
 		goto stop;
 	}
 
+	/* update the current pts */
 	clock_gettime(CLOCK_MONOTONIC, &this->now);
 
 again:
-	r = read(this->transport->fd, this->buffer, sizeof(this->buffer));
-	if (r < 0) {
-		/* interrupted, retry now */
+	/* read data from socket */
+	spa_log_debug(this->log, "reading socket data");
+	size_read = read(this->transport->fd, this->buffer_read, buffer_size);
+	if (size_read < 0) {
+		/* retry if interrumpted */
 		if (errno == EINTR)
 			goto again;
-		/* socket is not ready after all... */
+
+		/* return socked has no data */
 		if (errno == EAGAIN || errno == EWOULDBLOCK)
-			return;
-		spa_log_error(this->log, "read: %s", strerror(errno));
+		    return;
+
+		/* go to 'stop' if socket has an error */
+		spa_log_error(this->log, "read error: %s", strerror(errno));
 		goto stop;
 	}
 
-	spa_log_trace(this->log, "a2dp-source %p: read %d", this, (int) r);
+	/* make sure size_read is not bigger than the buffer_size */
+	spa_assert(size_read <= buffer_size);
 
-	decode_data(this, this->buffer, r);
+	/* decode the data */
+	decode_sbc_data(this, this->buffer_read, size_read);
+
+	/* done reading */
 	return;
 
 stop:
@@ -618,12 +640,12 @@ impl_node_port_enum_params(struct spa_node *node, int seq,
 
 		param = spa_pod_builder_add_object(&b,
 			SPA_TYPE_OBJECT_ParamBuffers, id,
-			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(2, 2, MAX_BUFFERS),
+			/* 8 buffers are enough to asure we always have one available buffer when decoding */
+			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(8, 8, MAX_BUFFERS),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
-			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(
-								this->props.min_latency * this->frame_size,
-								this->props.min_latency * this->frame_size,
-								INT32_MAX),
+			/* looks like uncompressed SBC data is 5 times bigger than compressed SBC data, so make
+			 * sure the buffer has enought space for it by making it 6 times bigger */
+			SPA_PARAM_BUFFERS_size,    SPA_POD_Int(this->props.min_latency * this->frame_size * 6),
 			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(this->frame_size),
 			SPA_PARAM_BUFFERS_align,   SPA_POD_Int(16));
 		break;
