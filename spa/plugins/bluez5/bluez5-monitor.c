@@ -1427,7 +1427,7 @@ static int sco_do_accept(struct spa_bt_transport *t)
 	spa_log_info(monitor->log, "doing accept");
 	sock = accept(td->sco.fd, (struct sockaddr *) &addr, &optlen);
 	if (sock < 0) {
-		if (errno != EAGAIN)
+		if (errno != EAGAIN && errno != EWOULDBLOCK)
 			spa_log_error(monitor->log, "accept(): %s", strerror(errno));
 		goto fail;
 	}
@@ -1454,17 +1454,17 @@ static int sco_do_connect(struct spa_bt_transport *t)
 	src_addr = d->adapter->address;
 	dst_addr = d->address;
 
-	/* don't use ba2str to avoid -lbluetooth */
-	for (i = 5; i >= 0; i--, src_addr += 3)
-		src.b[i] = strtol(src_addr, NULL, 16);
-	for (i = 5; i >= 0; i--, dst_addr += 3)
-		dst.b[i] = strtol(dst_addr, NULL, 16);
-
 	sock = socket(PF_BLUETOOTH, SOCK_SEQPACKET, BTPROTO_SCO);
 	if (sock < 0) {
 		spa_log_error(monitor->log, "socket(SEQPACKET, SCO) %s", strerror(errno));
 		return -errno;
 	}
+
+	/* don't use ba2str to avoid -lbluetooth */
+	for (i = 5; i >= 0; i--, src_addr += 3)
+		src.b[i] = strtol(src_addr, NULL, 16);
+	for (i = 5; i >= 0; i--, dst_addr += 3)
+		dst.b[i] = strtol(dst_addr, NULL, 16);
 
 	len = sizeof(addr);
 	memset(&addr, 0, len);
@@ -1501,6 +1501,9 @@ static int sco_acquire_cb(struct spa_bt_transport *t, bool optional)
 	int sock;
 	socklen_t len;
 
+	if (t->fd >= 0)
+		return 0;
+
 	if (optional)
 		sock = sco_do_accept(t);
 	else
@@ -1509,6 +1512,7 @@ static int sco_acquire_cb(struct spa_bt_transport *t, bool optional)
 	if (sock < 0)
 		goto fail;
 
+	t->fd = sock;
 	t->read_mtu = 48;
 	t->write_mtu = 48;
 
@@ -1526,7 +1530,8 @@ static int sco_acquire_cb(struct spa_bt_transport *t, bool optional)
 			t->write_mtu = sco_opt.mtu;
 		}
 	}
-	return sock;
+
+	return 0;
 fail:
 	return -1;
 }
