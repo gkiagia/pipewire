@@ -43,7 +43,9 @@
 #define MAX_DEVICES	64
 
 extern const struct spa_handle_factory spa_a2dp_source_factory;
+extern const struct spa_handle_factory spa_hsp_source_factory;
 extern const struct spa_handle_factory spa_a2dp_sink_factory;
+extern const struct spa_handle_factory spa_hsp_sink_factory;
 
 static const char default_device[] = "";
 
@@ -81,13 +83,11 @@ static int emit_source_node(struct impl *this)
 		spa_log_info(this->log, "A2DP (source) profile found");
 		profile = SPA_BT_PROFILE_A2DP_SOURCE;
 	} else if (device->connected_profiles & SPA_BT_PROFILE_HSP_HS) {
-		spa_log_info(this->log, "HSP (source) profile found (Not implemented yet)");
+		spa_log_info(this->log, "HSP (source) profile found");
 		profile = SPA_BT_PROFILE_HSP_HS;
-		return -ENODEV;
 	} else if (device->connected_profiles & SPA_BT_PROFILE_HFP_HF) {
-		spa_log_info(this->log, "HFP (source) profile found (Not implemented yet)");
+		spa_log_info(this->log, "HFP (source) profile found");
 		profile = SPA_BT_PROFILE_HFP_HF;
-		return -ENODEV;
 	}
 
 	/* Return if no profiles are connected */
@@ -104,7 +104,23 @@ static int emit_source_node(struct impl *this)
 
 			info = SPA_DEVICE_OBJECT_INFO_INIT();
 			info.type = SPA_TYPE_INTERFACE_Node;
+
+			/* Set the factory */
 			info.factory = &spa_a2dp_source_factory;
+			switch (profile) {
+			case SPA_BT_PROFILE_A2DP_SOURCE:
+				info.factory = &spa_a2dp_source_factory;
+				break;
+			case SPA_BT_PROFILE_HSP_HS:
+				info.factory = &spa_hsp_source_factory;
+				break;
+			case SPA_BT_PROFILE_HFP_HF:
+				info.factory = &spa_hsp_source_factory;
+				break;
+			default:
+				break;
+			}
+
 			info.change_mask = SPA_DEVICE_OBJECT_CHANGE_MASK_PROPS;
 			info.props = &SPA_DICT_INIT_ARRAY(items);
 
@@ -113,7 +129,6 @@ static int emit_source_node(struct impl *this)
 		}
 	}
 
-	spa_log_info (this->log, "bluez5 source nodes emitted");
 	return 0;
 }
 
@@ -128,13 +143,12 @@ static int emit_sink_node(struct impl *this)
 		spa_log_info(this->log, "A2DP (sink) profile found");
 		profile = SPA_BT_PROFILE_A2DP_SINK;
 	} else if (device->connected_profiles & SPA_BT_PROFILE_HSP_AG) {
-		spa_log_info(this->log, "HSP (sink) profile found (Not implemented yet)");
+		spa_log_info(this->log, "HSP (sink) profile found");
 		profile = SPA_BT_PROFILE_HSP_AG;
 		return -ENODEV;
 	} else if (device->connected_profiles & SPA_BT_PROFILE_HFP_AG) {
-		spa_log_info(this->log, "HFP (sink) profile found (Not implemented yet)");
+		spa_log_info(this->log, "HFP (sink) profile found");
 		profile = SPA_BT_PROFILE_HFP_AG;
-		return -ENODEV;
 	}
 
 	/* Return if no profiles are connected */
@@ -151,7 +165,23 @@ static int emit_sink_node(struct impl *this)
 
 			info = SPA_DEVICE_OBJECT_INFO_INIT();
 			info.type = SPA_TYPE_INTERFACE_Node;
+
+			/* Set the factory */
 			info.factory = &spa_a2dp_sink_factory;
+			switch (profile) {
+			case SPA_BT_PROFILE_A2DP_SINK:
+				info.factory = &spa_a2dp_sink_factory;
+				break;
+			case SPA_BT_PROFILE_HSP_AG:
+				info.factory = &spa_hsp_sink_factory;
+				break;
+			case SPA_BT_PROFILE_HFP_AG:
+				info.factory = &spa_hsp_sink_factory;
+				break;
+			default:
+				break;
+			}
+
 			info.change_mask = SPA_DEVICE_OBJECT_CHANGE_MASK_PROPS;
 			info.props = &SPA_DICT_INIT_ARRAY(items);
 
@@ -160,21 +190,7 @@ static int emit_sink_node(struct impl *this)
 		}
 	}
 
-	spa_log_info(this->log, "bluez5 sink nodes emitted");
 	return 0;
-}
-
-static int emit_nodes(struct impl *this)
-{
-	int sink, src;
-
-	sink = emit_sink_node(this);
-	src = emit_source_node(this);
-
-	if (sink == -ENODEV && src == -ENODEV)
-		spa_log_warn(this->log, "no profile available");
-
-	return SPA_MAX(sink, src);
 }
 
 static const struct spa_dict_item info_items[] = {
@@ -210,8 +226,10 @@ static int impl_add_listener(struct spa_device *device,
 		spa_device_emit_info(&this->hooks, &info);
 	}
 
-	if (events->object_info)
-		emit_nodes(this);
+	if (events->object_info) {
+		emit_source_node(this);
+		emit_sink_node(this);
+	}
 
 	spa_hook_list_join(&this->hooks, &save);
 
