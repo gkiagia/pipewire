@@ -1674,6 +1674,12 @@ static DBusHandlerResult profile_new_connection(DBusConnection *conn, DBusMessag
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
 
+	/* Only handle HSP profiles for now because HFP profiles need ofono */
+	if (profile == SPA_BT_PROFILE_HFP_AG || profile == SPA_BT_PROFILE_HFP_HF) {
+		spa_log_warn(monitor->log, "only HSP profiles are supported. Skipping %s", handler);
+		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+	}
+
 	dbus_message_iter_next(&it[0]);
 	dbus_message_iter_get_basic(&it[0], &fd);
 
