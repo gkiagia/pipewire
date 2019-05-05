@@ -40,7 +40,7 @@
 
 static const char default_device[] = "hw:0";
 static const uint32_t default_min_latency = 64;
-static const uint32_t default_max_latency = 1024;
+static const uint32_t default_max_latency = 240;
 
 static void reset_props(struct props *props)
 {
