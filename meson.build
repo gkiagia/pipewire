@@ -50,6 +50,11 @@ if cc.get_id() == 'gcc'
 			language : 'c')
 endif
 
+if host_machine.cpu_family() == 'arm'
+  add_global_arguments('-mno-unaligned-access',
+    language: 'c')
+endif
+
 sse_args = '-msse'
 sse2_args = '-msse2'
 ssse3_args = '-mssse3'
