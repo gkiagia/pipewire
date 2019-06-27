@@ -264,7 +264,7 @@ struct pw_node *pw_audio_dsp_new(struct pw_core *core,
 {
 	struct pw_node *node;
 	struct node *n;
-	const char *api, *alias, *str, *factory;
+	const char *api, *alias, *str, *factory, *mode;
 	char node_name[128];
 	struct pw_properties *pr;
 	int i;
@@ -279,6 +279,7 @@ struct pw_node *pw_audio_dsp_new(struct pw_core *core,
 		pw_log_error("missing audio-dsp.name property");
 		goto error;
 	}
+	mode = pw_properties_get(pr, "audio-dsp.mode");
 
 	snprintf(node_name, sizeof(node_name), "system_%s", alias);
 	for (i = 0; node_name[i]; i++) {
@@ -296,7 +297,9 @@ struct pw_node *pw_audio_dsp_new(struct pw_core *core,
 	if ((str = pw_properties_get(pr, "node.id")) != NULL)
 		pw_properties_set(pr, "node.session", str);
 
-	if (direction == PW_DIRECTION_OUTPUT) {
+	if (mode) {
+		factory = mode;
+	} else if (direction == PW_DIRECTION_OUTPUT) {
 		pw_properties_set(pr, "merger.monitor", "1");
 		factory = "merge";
 	} else {
