@@ -624,7 +624,21 @@ static int get_status(struct state *state, snd_pcm_uframes_t *delay, snd_pcm_ufr
 static int update_time(struct state *state, uint64_t nsec, snd_pcm_sframes_t delay,
 		snd_pcm_sframes_t target, bool slave)
 {
-	double err, corr;
+	double err, corr, drift;
+	snd_pcm_sframes_t consumed;
+
+	consumed = state->fill_level - delay;
+	if (state->alsa_started && consumed > 0) {
+		double sysclk_diff = nsec - state->last_time;
+		double devclk_diff = ((double) consumed) * 1e9 / state->rate;
+		drift = sysclk_diff / devclk_diff;
+		drift = SPA_CLAMP(drift, 0.6, 1.0);
+
+		spa_log_trace_fp(state->log, "cons:%ld sclk:%f dclk:%f drift:%f",
+			consumed, sysclk_diff, devclk_diff, drift);
+	} else {
+		drift = 1.0;
+	}
 
 	if (state->stream == SND_PCM_STREAM_PLAYBACK)
 		err = delay - target;
@@ -677,11 +691,11 @@ static int update_time(struct state *state, uint64_t nsec, snd_pcm_sframes_t del
 		state->clock->next_nsec = state->next_time;
 	}
 
-	spa_log_trace_fp(state->log, "slave:%d %"PRIu64" %f %ld %f %f %d", slave, nsec,
-			corr, delay, err, state->threshold * corr,
+	spa_log_trace_fp(state->log, "slave:%d %"PRIu64" %f %ld %f %f %f %d", slave, nsec,
+			corr, delay, err, state->threshold * corr, drift,
 			state->threshold);
 
-	state->next_time += state->threshold / corr * 1e9 / state->rate;
+	state->next_time += state->threshold / corr * drift * 1e9 / state->rate;
 	state->last_threshold = state->threshold;
 
 	return 0;
@@ -812,6 +826,10 @@ again:
 		goto again;
 
 	state->sample_count += total_written;
+	state->fill_level += total_written;
+
+	clock_gettime(CLOCK_MONOTONIC, &state->now);
+	state->last_time = SPA_TIMESPEC_TO_NSEC (&state->now);
 
 	if (!state->alsa_started && total_written > 0) {
 		spa_log_trace(state->log, "snd_pcm_start %lu", written);
@@ -981,6 +999,8 @@ static int handle_play(struct state *state, uint64_t nsec,
 	if ((res = update_time(state, nsec, delay, target, false)) < 0)
 		return res;
 
+	state->fill_level = delay;
+
 	if (spa_list_is_empty(&state->ready)) {
 		struct spa_io_buffers *io = state->io;
 
@@ -1120,6 +1140,7 @@ int spa_alsa_start(struct state *state)
 
 	state->threshold = (state->duration * state->rate + state->rate_denom-1) / state->rate_denom;
 	state->last_threshold = state->threshold;
+	state->fill_level = 0;
 
 	init_loop(state);
 	state->safety = 0.0;
