@@ -1392,7 +1392,10 @@ static void rfcomm_event(struct spa_source *source)
 {
 	struct spa_bt_transport *t = source->data;
 	struct spa_bt_monitor *monitor = t->monitor;
+	char buf[512];
+	ssize_t len;
 
+	/* Check for errors */
 	if (source->rmask & (SPA_IO_HUP | SPA_IO_ERR)) {
 		spa_log_info(monitor->log, "lost RFCOMM connection.");
 		if (source->loop)
@@ -1400,19 +1403,18 @@ static void rfcomm_event(struct spa_source *source)
 		goto fail;
 	}
 
+	/* Read the command */
+	len = read(source->fd, buf, 511);
+	if (len < 0) {
+		spa_log_error(monitor->log, "RFCOMM read error: %s", strerror(errno));
+		goto fail;
+	}
+	buf[len] = 0;
+	printf ("RFCOMM AT COMMAND: %s\n", buf);
+
 	if (source->rmask & SPA_IO_IN) {
-		char buf[512];
-		ssize_t len;
 		int gain, dummy;
 		bool  do_reply = false;
-
-		len = read(source->fd, buf, 511);
-		if (len < 0) {
-			spa_log_error(monitor->log, "RFCOMM read error: %s", strerror(errno));
-			goto fail;
-		}
-		buf[len] = 0;
-		spa_log_debug(monitor->log, "RFCOMM << %s", buf);
 
 		/* There are only four HSP AT commands:
 		 * AT+VGS=value: value between 0 and 15, sent by the HS to AG to set the speaker gain.
@@ -1669,12 +1671,14 @@ static int sco_destroy_cb(void *data)
 			spa_loop_remove_source(td->sco.loop, &td->sco);
 		shutdown(td->sco.fd, SHUT_RDWR);
 		close (td->sco.fd);
+		td->sco.fd = -1;
 	}
 	if (td->rfcomm.data) {
 		if (td->rfcomm.loop)
 			spa_loop_remove_source(td->rfcomm.loop, &td->rfcomm);
 		shutdown(td->rfcomm.fd, SHUT_RDWR);
 		close (td->rfcomm.fd);
+		td->rfcomm.fd = -1;
 	}
 	return 0;
 }
