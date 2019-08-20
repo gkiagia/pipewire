@@ -403,11 +403,9 @@ gst_pw_audio_ring_buffer_acquire (GstAudioRingBuffer *buf,
 
   /* construct param & props objects */
 
+  props = pw_properties_new (NULL, NULL);
   if (self->props->properties) {
-    props = pw_properties_new (NULL, NULL);
     gst_structure_foreach (self->props->properties, copy_properties, props);
-  } else {
-    props = NULL;
   }
 
   spa_pod_builder_init (&b, buffer, sizeof (buffer));
@@ -424,6 +422,9 @@ gst_pw_audio_ring_buffer_acquire (GstAudioRingBuffer *buf,
   self->rate = GST_AUDIO_INFO_RATE (&spec->info);
   self->channels = GST_AUDIO_INFO_CHANNELS (&spec->info);
   self->segoffset = 0;
+
+  pw_properties_setf(props, "node.latency", "%u/%u",
+      self->segsize / self->bpf, self->rate);
 
   /* connect stream */
 
