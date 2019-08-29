@@ -389,7 +389,7 @@ static void device_add(struct pw_device *device, uint32_t id,
 		pw_properties_update(props, info->props);
 
 	node = pw_node_new(device->core,
-			   device->info.name,
+			   info->name ? info->name : device->info.name,
 			   props,
 			   sizeof(struct node_data) +
 			   spa_handle_factory_get_size(info->factory, info->props));
