@@ -134,8 +134,8 @@ struct impl {
 
 #define CHECK_PORT(this,d,p)    ((d) == SPA_DIRECTION_INPUT && (p) == 0)
 
-static const uint32_t default_min_latency = 128;
-static const uint32_t default_max_latency = 1024;
+static const uint32_t default_min_latency = 64;
+static const uint32_t default_max_latency = 256;
 
 static void reset_props(struct props *props)
 {
@@ -350,6 +350,14 @@ static bool write_data(struct impl *this, const uint8_t *data, uint32_t size, ui
 	while (local_total_written <= (size - mtu_size)) {
 		const int bytes_written = write(this->sock_fd, data, mtu_size);
 		if (bytes_written < 0) {
+			/* Retry */
+			if (errno == EINTR)
+				continue;
+
+			/* Cannot write data */
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+			    goto done;
+
 			spa_log_warn(this->log, "error writting data: %s", strerror(errno));
 			return false;
 		}
@@ -362,6 +370,7 @@ static bool write_data(struct impl *this, const uint8_t *data, uint32_t size, ui
 	if (local_total_written != size)
 		spa_log_warn(this->log, "dropping some audio as buffer size is not multiple of mtu");
 
+done:
 	if (total_written)
 		*total_written = local_total_written;
 	return true;
@@ -781,7 +790,7 @@ impl_node_port_enum_params(void *object, int seq,
 
 		param = spa_pod_builder_add_object(&b,
 			SPA_TYPE_OBJECT_ParamBuffers, id,
-			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(2, 2, MAX_BUFFERS),
+			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(8, 8, MAX_BUFFERS),
 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(1),
 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(
 							this->props.min_latency * port->frame_size,
