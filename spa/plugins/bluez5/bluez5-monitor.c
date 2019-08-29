@@ -864,6 +864,26 @@ static void transport_free(struct spa_bt_transport *transport)
 	free(transport);
 }
 
+static void transport_update_name(struct spa_bt_transport *t) {
+	switch (t->profile) {
+	case SPA_BT_PROFILE_A2DP_SOURCE:
+	case SPA_BT_PROFILE_A2DP_SINK:
+		snprintf (t->name, 256, "bluez5.a2dp %s", t->device->name);
+		break;
+	case SPA_BT_PROFILE_HSP_HS:
+	case SPA_BT_PROFILE_HFP_HF:
+		snprintf (t->name, 256, "bluez5.headunit %s", t->device->name);
+		break;
+	case SPA_BT_PROFILE_HSP_AG:
+	case SPA_BT_PROFILE_HFP_AG:
+		snprintf (t->name, 256, "bluez5.gateway %s", t->device->name);
+		break;
+	default:
+		snprintf (t->name, 256, "bluez5.unknown %s", t->device->name);
+		break;
+	}
+}
+
 static int transport_update_props(struct spa_bt_transport *transport,
 				  DBusMessageIter *props_iter,
 				  DBusMessageIter *invalidated_iter)
@@ -893,9 +913,11 @@ static int transport_update_props(struct spa_bt_transport *transport,
 				switch (spa_bt_profile_from_uuid(value)) {
 				case SPA_BT_PROFILE_A2DP_SOURCE:
 					transport->profile = SPA_BT_PROFILE_A2DP_SINK;
+					transport_update_name(transport);
 					break;
 				case SPA_BT_PROFILE_A2DP_SINK:
 					transport->profile = SPA_BT_PROFILE_A2DP_SOURCE;
+					transport_update_name(transport);
 					break;
 				default:
 					spa_log_warn(monitor->log, "unknown profile %s", value);
@@ -1743,6 +1765,7 @@ static DBusHandlerResult profile_new_connection(DBusConnection *conn, DBusMessag
 	t->device = d;
 	spa_list_append(&t->device->transport_list, &t->device_link);
 	t->profile = profile;
+	transport_update_name(t);
 
 	td = t->user_data;
 	td->rfcomm.func = rfcomm_event;

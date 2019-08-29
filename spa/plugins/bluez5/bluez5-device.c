@@ -84,6 +84,7 @@ static void emit_node (struct impl *this, struct spa_bt_transport *t, const stru
         info = SPA_DEVICE_OBJECT_INFO_INIT();
         info.type = SPA_TYPE_INTERFACE_Node;
         info.factory = factory;
+        info.name = t->name;
         info.change_mask = SPA_DEVICE_OBJECT_CHANGE_MASK_PROPS;
 
         /* Pass the transport pointer as a property */

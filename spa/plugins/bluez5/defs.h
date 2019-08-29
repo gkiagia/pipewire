@@ -207,6 +207,7 @@ struct spa_bt_transport {
 	struct spa_bt_device *device;
 	struct spa_list device_link;
 	enum spa_bt_profile profile;
+	char name[256];
 	enum spa_bt_transport_state state;
 	int codec;
 	void *configuration;
