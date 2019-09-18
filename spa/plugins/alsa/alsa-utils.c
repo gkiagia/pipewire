@@ -289,12 +289,14 @@ spa_alsa_enum_format(struct state *state, int seq, uint32_t start, uint32_t num,
 					spa_pod_builder_id(&b, fi->spa_format);
 				spa_pod_builder_id(&b, fi->spa_format);
 			}
+			/*
 			if (snd_pcm_access_mask_test(amask, SND_PCM_ACCESS_MMAP_NONINTERLEAVED) &&
 					fi->spa_pformat != SPA_AUDIO_FORMAT_UNKNOWN) {
 				if (j++ == 0)
 					spa_pod_builder_id(&b, fi->spa_pformat);
 				spa_pod_builder_id(&b, fi->spa_pformat);
 			}
+			*/
 		}
 	}
 	if (j > 1)
